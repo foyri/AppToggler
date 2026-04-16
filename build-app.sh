@@ -18,6 +18,36 @@ mkdir -p "$ROOT/dist"
 
 swift build -c release
 
+# Patch KeyboardShortcuts resource_bundle_accessor to look in Contents/Resources/ first.
+# The generated version only checks Bundle.main.bundleURL (.app root) which codesign forbids.
+ACCESSOR=$(find "$ROOT/.build" -path "*/release/KeyboardShortcuts.build/DerivedSources/resource_bundle_accessor.swift" | head -1)
+if [[ -n "$ACCESSOR" ]]; then
+  cat > "$ACCESSOR" <<'SWIFT'
+import Foundation
+
+private class BundleFinder {}
+
+extension Foundation.Bundle {
+    static let module: Bundle = {
+        let bundleName = "KeyboardShortcuts_KeyboardShortcuts"
+        let candidates: [URL?] = [
+            Bundle.main.resourceURL,
+            Bundle(for: BundleFinder.self).resourceURL,
+            Bundle.main.bundleURL,
+        ]
+        for candidate in candidates {
+            if let url = candidate?.appendingPathComponent(bundleName + ".bundle"),
+               let bundle = Bundle(url: url) {
+                return bundle
+            }
+        }
+        Swift.fatalError("could not load resource bundle: \(bundleName)")
+    }()
+}
+SWIFT
+  swift build -c release
+fi
+
 mkdir -p "$APP_MACOS" "$APP_RES"
 
 if [[ ! -f "$APP_PLIST" ]]; then
@@ -54,7 +84,7 @@ fi
 cp "$APP_BIN" "$APP_MACOS/$APP_NAME"
 chmod +x "$APP_MACOS/$APP_NAME"
 
-# Copy SwiftPM resource bundles (required by KeyboardShortcuts recorder localization).
+# Copy SwiftPM resource bundles into Contents/Resources/ (accessor patched above to check resourceURL).
 find "$ROOT/.build" -type d -path '*/release/*.bundle' -print0 | while IFS= read -r -d '' bundle; do
   name="$(basename "$bundle")"
   rm -rf "$APP_RES/$name"
